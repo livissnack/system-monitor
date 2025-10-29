@@ -222,3 +222,18 @@ sudo systemctl status system-monitor.service
 # 查看日志
 sudo journalctl -u system-monitor.service -f
 ```
+
+### rust版轻量级，性能消耗，以及示例
+
+性能消耗：
+1. 运行时内存占用：1.5M
+2. 运行时CPU占用：0.5%
+3. 运行时网络带宽占用：0.5M
+4. 运行时磁盘IO占用：0.5M
+
+
+图片示例1：
+![系统运行demo截图](./demo-imgs/2.png)
+
+图片示例2：
+![系统运行demo截图](./demo-imgs/1.png)
