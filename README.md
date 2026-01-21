@@ -162,6 +162,7 @@ cargo build --release
 ```
 vim /etc/systemd/system/system-monitor.service
 ```
+s1ZSgBoTwRQj4OThNfjEKaSEOaUzJNZOMRTxf6Rc
 
 ### 编辑服务配置
 ```
@@ -175,7 +176,7 @@ Type=simple
 User=monitor
 Group=monitor
 WorkingDirectory=/var/app/system-monitor
-ExecStart=/var/app/system-monitor/system-monitor 3000
+ExecStart=/var/app/system-monitor/system-monitor 3000 token值
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
@@ -215,6 +216,9 @@ sudo systemctl enable system-monitor.service
 
 # 启动服务
 sudo systemctl start system-monitor.service
+
+# 停止服务
+sudo systemctl stop system-monitor.service
 
 # 查看状态
 sudo systemctl status system-monitor.service

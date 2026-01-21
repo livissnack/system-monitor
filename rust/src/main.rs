@@ -9,6 +9,8 @@ use tokio_stream::wrappers::IntervalStream;
 use tokio_stream::StreamExt;
 use warp::http::Response;
 
+// --- 1. 数据结构定义 ---
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SystemInfo {
     pub system: SystemData,
@@ -39,6 +41,7 @@ pub struct MemoryInfo {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CpuInfo {
+    pub model: String,
     pub cores: usize,
     pub usage: f32,
     pub load_average: LoadAverage,
@@ -53,6 +56,7 @@ pub struct LoadAverage {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DiskInfo {
+    pub name: String,
     pub total: u64,
     pub used: u64,
     pub free: u64,
@@ -87,6 +91,8 @@ pub struct RuntimeInfo {
     pub start_time: u64,
 }
 
+// --- 2. 监控逻辑实现 ---
+
 pub struct SystemMonitor {
     sys: System,
     start_time: SystemTime,
@@ -96,7 +102,6 @@ impl SystemMonitor {
     pub fn new() -> Self {
         let mut sys = System::new_all();
         sys.refresh_all();
-        
         Self {
             sys,
             start_time: SystemTime::now(),
@@ -114,7 +119,6 @@ impl SystemMonitor {
 
     pub fn get_system_info(&mut self) -> SystemInfo {
         self.refresh();
-
         SystemInfo {
             system: self.get_system_data(),
             memory: self.get_memory_info(),
@@ -143,24 +147,17 @@ impl SystemMonitor {
         let total = self.sys.total_memory();
         let used = self.sys.used_memory();
         let free = self.sys.free_memory();
-        let usage = if total > 0 {
-            (used as f32 / total as f32) * 100.0
-        } else {
-            0.0
-        };
-
-        MemoryInfo {
-            total,
-            used,
-            free,
-            usage,
-        }
+        let usage = if total > 0 { (used as f32 / total as f32) * 100.0 } else { 0.0 };
+        MemoryInfo { total, used, free, usage }
     }
 
     fn get_cpu_info(&self) -> CpuInfo {
         let load_avg = self.sys.load_average();
-        
+        let model = self.sys.cpus().first()
+            .map(|cpu| cpu.brand().to_string())
+            .unwrap_or_else(|| "Unknown CPU".to_string());
         CpuInfo {
+            model,
             cores: self.sys.cpus().len(),
             usage: self.sys.global_cpu_info().cpu_usage(),
             load_average: LoadAverage {
@@ -174,33 +171,23 @@ impl SystemMonitor {
     fn get_disk_info(&self) -> DiskInfo {
         let mut total = 0;
         let mut used = 0;
-
+        let mut main_disk_name = String::from("Unknown");
         for disk in self.sys.disks() {
             total += disk.total_space();
             used += disk.total_space() - disk.available_space();
+            if disk.mount_point() == std::path::Path::new("/") || main_disk_name == "Unknown" {
+                main_disk_name = disk.name().to_string_lossy().into_owned();
+            }
         }
-
         let free = total - used;
-        let usage = if total > 0 {
-            (used as f32 / total as f32) * 100.0
-        } else {
-            0.0
-        };
-
-        DiskInfo {
-            total,
-            used,
-            free,
-            usage,
-        }
+        let usage = if total > 0 { (used as f32 / total as f32) * 100.0 } else { 0.0 };
+        DiskInfo { name: main_disk_name, total, used, free, usage }
     }
 
     fn get_network_info(&self) -> NetworkInfo {
         let mut interfaces = Vec::new();
-        let mut total_received = 0;
-        let mut total_sent = 0;
-        let mut total_packets_received = 0;
-        let mut total_packets_sent = 0;
+        let (mut total_received, mut total_sent) = (0, 0);
+        let (mut total_packets_received, mut total_packets_sent) = (0, 0);
 
         for (interface_name, data) in self.sys.networks() {
             interfaces.push(NetworkInterface {
@@ -209,7 +196,6 @@ impl SystemMonitor {
                 received: data.total_received(),
                 transmitted: data.total_transmitted(),
             });
-
             total_received += data.total_received();
             total_sent += data.total_transmitted();
             total_packets_received += data.total_packets_received();
@@ -230,18 +216,14 @@ impl SystemMonitor {
     fn get_runtime_info(&self) -> RuntimeInfo {
         RuntimeInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            start_time: self.start_time
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            start_time: self.start_time.duration_since(UNIX_EPOCH).unwrap().as_secs(),
         }
     }
 }
 
-// SSE 事件流
-async fn sse_handler(
-    interval_ms: u64,
-) -> Result<impl warp::Reply, Infallible> {
+// --- 3. Web 处理函数 ---
+
+async fn sse_handler(interval_ms: u64) -> Result<impl warp::Reply, Infallible> {
     let stream = IntervalStream::new(interval(Duration::from_millis(interval_ms)))
         .map(move |_| {
             let mut monitor = SystemMonitor::new();
@@ -251,26 +233,24 @@ async fn sse_handler(
         });
 
     let body = warp::hyper::Body::wrap_stream(stream);
-
-    let response = Response::builder()
+    Ok(Response::builder()
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Access-Control-Allow-Headers", "Cache-Control")
-        .header("Transfer-Encoding", "chunked")
         .body(body)
-        .unwrap();
-
-    Ok(response)
+        .unwrap())
 }
 
-// API 端点
 async fn api_handler() -> Result<impl warp::Reply, Rejection> {
     let mut monitor = SystemMonitor::new();
     let info = monitor.get_system_info();
     Ok(warp::reply::json(&info))
 }
+
+// fn html_handler() -> impl warp::Reply {
+//     let html = include_str!("index.html"); // 建议把 HTML 存为同目录下的 index.html
+//     warp::reply::html(html)
+// }
 
 // HTML 页面
 fn html_handler() -> impl warp::Reply {
@@ -302,6 +282,7 @@ fn html_handler() -> impl warp::Reply {
         .network-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
         .timestamp { text-align: center; color: #888; margin-top: 20px; }
         .error { color: #ff6b6b; background: #2a1a1a; padding: 10px; border-radius: 5px; margin: 10px 0; }
+        .stat-value { font-weight: bold; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;max-width: 200px; }
     </style>
 </head>
 <body>
@@ -345,6 +326,7 @@ fn html_handler() -> impl warp::Reply {
 
             <div class="card">
                 <h3>⚡ CPU 信息</h3>
+                <div class="stat-item"><span class="stat-label">型号:</span><span class="stat-value" id="cpuModel">-</span></div>
                 <div class="stat-item"><span class="stat-label">核心数:</span><span class="stat-value" id="cpuCores">-</span></div>
                 <div class="stat-item"><span class="stat-label">使用率:</span><span class="stat-value" id="cpuUsage">-</span></div>
                 <div class="stat-item"><span class="stat-label">负载 (1/5/15分钟):</span><span class="stat-value" id="cpuLoad">-</span></div>
@@ -353,6 +335,10 @@ fn html_handler() -> impl warp::Reply {
 
             <div class="card">
                 <h3>💾 磁盘信息</h3>
+                <div class="stat-item">
+                    <span class="stat-label">磁盘型号:</span>
+                    <span class="stat-value" id="diskName">-</span>
+                </div>
                 <div class="stat-item"><span class="stat-label">总空间:</span><span class="stat-value" id="diskTotal">-</span></div>
                 <div class="stat-item"><span class="stat-label">已使用:</span><span class="stat-value" id="diskUsed">-</span></div>
                 <div class="stat-item"><span class="stat-label">使用率:</span><span class="stat-value" id="diskUsage">-</span></div>
@@ -392,8 +378,19 @@ fn html_handler() -> impl warp::Reply {
         }
 
         function connect() {
+            // 1. 从当前页面的 URL 中获取 token
+            const urlParams = new URLSearchParams(window.location.search);
+            const token = urlParams.get('token');
+
+            if (!token) {
+                showError('URL 中缺失 token 参数，无法连接服务器');
+                return;
+            }
+
+            // 2. 将 token 和 interval 组合到 SSE 请求中
             const params = new URLSearchParams({
-                interval: currentInterval
+                interval: currentInterval,
+                token: token // 必须加上这一行
             });
 
             eventSource = new EventSource('/sse?' + params.toString());
@@ -448,12 +445,14 @@ fn html_handler() -> impl warp::Reply {
             document.getElementById('memoryProgress').style.width = `${data.memory.usage}%`;
 
             // CPU 信息
+            document.getElementById('cpuModel').textContent = data.cpu.model;
             document.getElementById('cpuCores').textContent = data.cpu.cores;
             document.getElementById('cpuUsage').textContent = `${data.cpu.usage.toFixed(1)}%`;
             document.getElementById('cpuLoad').textContent = `${data.cpu.load_average.one.toFixed(2)} / ${data.cpu.load_average.five.toFixed(2)} / ${data.cpu.load_average.fifteen.toFixed(2)}`;
             document.getElementById('cpuProgress').style.width = `${data.cpu.usage}%`;
 
             // 磁盘信息
+            document.getElementById('diskName').textContent = data.disk.name || "Unknown";
             document.getElementById('diskTotal').textContent = formatBytes(data.disk.total);
             document.getElementById('diskUsed').textContent = formatBytes(data.disk.used);
             document.getElementById('diskUsage').textContent = `${data.disk.usage.toFixed(1)}%`;
@@ -516,51 +515,69 @@ fn html_handler() -> impl warp::Reply {
     warp::reply::html(html)
 }
 
+// --- 4. 认证与错误处理 ---
+
+#[derive(Debug)]
+struct AuthFailure;
+impl warp::reject::Reject for AuthFailure {}
+
+async fn handle_rejection(err: Rejection) -> Result<impl warp::Reply, Infallible> {
+    if err.find::<AuthFailure>().is_some() {
+        Ok(warp::reply::with_status("Invalid Token", warp::http::StatusCode::FORBIDDEN))
+    } else {
+        Ok(warp::reply::with_status("Internal Error", warp::http::StatusCode::INTERNAL_SERVER_ERROR))
+    }
+}
+
+// --- 5. 主函数 ---
+
 #[tokio::main]
 async fn main() {
-    let port = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8080);
+    let args: Vec<String> = std::env::args().collect();
+    let port = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8080);
+    let auth_token = args.get(2).cloned().unwrap_or_else(|| "m1MLaC23MmDNmkPf21STPnNDPSv9P7".to_string());
 
-    println!("🚀 启动系统监控服务器 http://0.0.0.0:{}", port);
-    println!("可用端点:");
-    println!("  GET /sse     - SSE 流式系统监控");
-    println!("  GET /api     - 一次性系统信息 (JSON)");
-    println!("  GET /        - 网页监控界面\n");
+    println!("🚀 Server: http://0.0.0.0:{}", port);
+    println!("🔐 Token: {}", auth_token);
+    println!("  GET /sse?token=m1MLaC23MmDNmkPf21STPnNDPSv9P7     - SSE 流式系统监控");
+    println!("  GET /api?token=m1MLaC23MmDNmkPf21STPnNDPSv9P7     - 一次性系统信息 (JSON)");
+    println!("  GET /?token=m1MLaC23MmDNmkPf21STPnNDPSv9P7       - 网页监控界面\n");
 
-    // CORS 中间件
-    let cors = warp::cors()
-        .allow_any_origin()
-        .allow_methods(vec!["GET", "POST"])
-        .allow_headers(vec!["Content-Type"]);
+    let token_filter = warp::any().map(move || auth_token.clone());
 
-    // 路由定义 - 最简单的版本
+    let with_auth = warp::query::<HashMap<String, String>>()
+        .and(token_filter)
+        .and_then(|params: HashMap<String, String>, required: String| async move {
+            if params.get("token") == Some(&required) {
+                Ok(())
+            } else {
+                Err(warp::reject::custom(AuthFailure))
+            }
+        });
+
+    let cors = warp::cors().allow_any_origin().allow_methods(vec!["GET"]).allow_headers(vec!["Content-Type"]);
+
+    // SSE 路由：注意闭包多了一个 _ 参数来接收 with_auth 传来的 ()
     let sse_route = warp::path("sse")
         .and(warp::get())
+        .and(with_auth.clone())
         .and(warp::query::<HashMap<String, String>>())
-        .and_then(|params: HashMap<String, String>| async move {
-            let interval_ms = params
-                .get("interval")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(2000);
+        .and_then(|_auth, params: HashMap<String, String>| async move {
+            let interval_ms = params.get("interval").and_then(|s| s.parse().ok()).unwrap_or(2000);
             sse_handler(interval_ms).await
         });
 
     let api_route = warp::path("api")
         .and(warp::get())
-        .and_then(api_handler);
+        .and(with_auth.clone())
+        .and_then(|_auth| api_handler());
 
     let html_route = warp::path::end()
         .and(warp::get())
-        .map(html_handler);
+        .and(with_auth.clone())
+        .map(|_auth| html_handler());
 
-    let routes = sse_route
-        .or(api_route)
-        .or(html_route)
-        .with(cors);
+    let routes = sse_route.or(api_route).or(html_route).with(cors).recover(handle_rejection);
 
-    warp::serve(routes)
-        .run(([0, 0, 0, 0], port))
-        .await;
+    warp::serve(routes).run(([0, 0, 0, 0], port)).await;
 }
