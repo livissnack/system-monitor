@@ -1,13 +1,13 @@
-use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
-use sysinfo::{System, SystemExt, CpuExt, DiskExt, NetworkExt};
-use warp::{Filter, Rejection};
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use sysinfo::{CpuExt, DiskExt, NetworkExt, System, SystemExt};
 use tokio::time::interval;
 use tokio_stream::wrappers::IntervalStream;
 use tokio_stream::StreamExt;
 use warp::http::Response;
+use warp::{Filter, Rejection};
 
 // --- 1. 数据结构定义 ---
 
@@ -135,9 +135,15 @@ impl SystemMonitor {
 
     fn get_system_data(&self) -> SystemData {
         SystemData {
-            hostname: self.sys.host_name().unwrap_or_else(|| "unknown".to_string()),
+            hostname: self
+                .sys
+                .host_name()
+                .unwrap_or_else(|| "unknown".to_string()),
             os_name: self.sys.name().unwrap_or_else(|| "unknown".to_string()),
-            kernel_version: self.sys.kernel_version().unwrap_or_else(|| "unknown".to_string()),
+            kernel_version: self
+                .sys
+                .kernel_version()
+                .unwrap_or_else(|| "unknown".to_string()),
             uptime: self.sys.uptime(),
             boot_time: self.sys.boot_time(),
         }
@@ -147,13 +153,25 @@ impl SystemMonitor {
         let total = self.sys.total_memory();
         let used = self.sys.used_memory();
         let free = self.sys.free_memory();
-        let usage = if total > 0 { (used as f32 / total as f32) * 100.0 } else { 0.0 };
-        MemoryInfo { total, used, free, usage }
+        let usage = if total > 0 {
+            (used as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        };
+        MemoryInfo {
+            total,
+            used,
+            free,
+            usage,
+        }
     }
 
     fn get_cpu_info(&self) -> CpuInfo {
         let load_avg = self.sys.load_average();
-        let model = self.sys.cpus().first()
+        let model = self
+            .sys
+            .cpus()
+            .first()
             .map(|cpu| cpu.brand().to_string())
             .unwrap_or_else(|| "Unknown CPU".to_string());
         CpuInfo {
@@ -180,8 +198,18 @@ impl SystemMonitor {
             }
         }
         let free = total - used;
-        let usage = if total > 0 { (used as f32 / total as f32) * 100.0 } else { 0.0 };
-        DiskInfo { name: main_disk_name, total, used, free, usage }
+        let usage = if total > 0 {
+            (used as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        };
+        DiskInfo {
+            name: main_disk_name,
+            total,
+            used,
+            free,
+            usage,
+        }
     }
 
     fn get_network_info(&self) -> NetworkInfo {
@@ -216,7 +244,11 @@ impl SystemMonitor {
     fn get_runtime_info(&self) -> RuntimeInfo {
         RuntimeInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            start_time: self.start_time.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            start_time: self
+                .start_time
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
         }
     }
 }
@@ -224,13 +256,12 @@ impl SystemMonitor {
 // --- 3. Web 处理函数 ---
 
 async fn sse_handler(interval_ms: u64) -> Result<impl warp::Reply, Infallible> {
-    let stream = IntervalStream::new(interval(Duration::from_millis(interval_ms)))
-        .map(move |_| {
-            let mut monitor = SystemMonitor::new();
-            let info = monitor.get_system_info();
-            let json = serde_json::to_string(&info).unwrap();
-            Ok::<String, Infallible>(format!("data: {}\n\n", json))
-        });
+    let stream = IntervalStream::new(interval(Duration::from_millis(interval_ms))).map(move |_| {
+        let mut monitor = SystemMonitor::new();
+        let info = monitor.get_system_info();
+        let json = serde_json::to_string(&info).unwrap();
+        Ok::<String, Infallible>(format!("data: {}\n\n", json))
+    });
 
     let body = warp::hyper::Body::wrap_stream(stream);
     Ok(Response::builder()
@@ -252,7 +283,8 @@ async fn api_handler() -> Result<impl warp::Reply, Rejection> {
 //     warp::reply::html(html)
 // }
 
-// HTML 页面
+// HTML 页面 - 增加中英文切换功能
+// HTML 页面 - 增加 Chart.js 实时折线图
 fn html_handler() -> impl warp::Reply {
     let html = r#"
 <!DOCTYPE html>
@@ -260,258 +292,469 @@ fn html_handler() -> impl warp::Reply {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>系统监控面板</title>
+    <title>System Monitor Pro | Rust</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap');
+
+        :root {
+            --bg-color: #08080e;
+            --card-bg: rgba(17, 18, 34, 0.9);
+            --accent-color: #6366f1;
+            --text-main: #f1f5f9;
+            --text-dim: #64748b;
+            --success: #10b981;
+            --error: #f43f5e;
+            --panel-border: rgba(255, 255, 255, 0.08);
+        }
+
+        html { color-scheme: dark; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f0f23; color: #fff; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { text-align: center; margin-bottom: 30px; padding: 20px; background: #1a1a2e; border-radius: 10px; }
-        .controls { display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }
-        .control-group { background: #1a1a2e; padding: 15px; border-radius: 8px; }
-        button { padding: 10px 20px; background: #4a4a8a; color: white; border: none; border-radius: 5px; cursor: pointer; }
-        button:hover { background: #5a5a9a; }
-        button.active { background: #6a6aaa; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 20px; }
-        .card { background: #1a1a2e; padding: 20px; border-radius: 10px; border-left: 4px solid #4a4a8a; }
-        .card h3 { margin-bottom: 15px; color: #8a8aff; }
-        .stat-item { display: flex; justify-content: space-between; margin-bottom: 8px; }
-        .stat-label { color: #aaa; }
-        .stat-value { font-weight: bold; }
-        .progress-bar { background: #2a2a3e; height: 20px; border-radius: 10px; margin: 10px 0; overflow: hidden; }
-        .progress-fill { height: 100%; background: linear-gradient(90deg, #4a4a8a, #8a8aff); transition: width 0.3s ease; }
-        .network-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        .timestamp { text-align: center; color: #888; margin-top: 20px; }
-        .error { color: #ff6b6b; background: #2a1a1a; padding: 10px; border-radius: 5px; margin: 10px 0; }
-        .stat-value { font-weight: bold; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;max-width: 200px; }
+
+        body {
+            font-family: 'Inter', -apple-system, system-ui, sans-serif;
+            background: var(--bg-color);
+            background-image:
+                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.18) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, rgba(16, 185, 129, 0.12) 0px, transparent 50%);
+            color: var(--text-main);
+            padding: 34px 18px;
+            min-height: 100vh;
+            line-height: 1.4;
+        }
+
+        .container { max-width: 1220px; margin: 0 auto; }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 18px;
+            padding: 16px 18px;
+            border-radius: 18px;
+            border: 1px solid var(--panel-border);
+            background: rgba(17, 18, 34, 0.55);
+            backdrop-filter: blur(10px);
+        }
+
+        .header h1 {
+            font-size: 1.6rem;
+            letter-spacing: 1px;
+            font-weight: 800;
+            background: linear-gradient(90deg, #ffffff 0%, rgba(99, 102, 241, 0.95) 55%, rgba(16, 185, 129, 0.9) 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            white-space: nowrap;
+        }
+
+        .lang-toggle {
+            display: flex;
+            gap: 4px;
+            background: rgba(26, 27, 46, 0.7);
+            border-radius: 20px;
+            padding: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .lang-btn {
+            padding: 6px 14px;
+            font-size: 0.75rem;
+            border-radius: 16px;
+            cursor: pointer;
+            transition: 0.2s ease;
+            color: var(--text-dim);
+            border: 1px solid transparent;
+            user-select: none;
+        }
+
+        .lang-btn:hover { color: #fff; border-color: rgba(255, 255, 255, 0.08); }
+        .lang-btn.active { background: var(--accent-color); color: white; border-color: rgba(99, 102, 241, 0.5); }
+
+        .controls { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+        .control-group {
+            background: rgba(17, 18, 34, 0.7);
+            padding: 8px;
+            border-radius: 14px;
+            border: 1px solid var(--panel-border);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            backdrop-filter: blur(10px);
+        }
+
+        .control-group label {
+            padding: 0 8px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
+        }
+
+        button {
+            padding: 7px 15px;
+            background: rgba(255, 255, 255, 0.02);
+            color: var(--text-dim);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 700;
+            transition: 0.2s ease;
+        }
+
+        button:hover {
+            color: #fff;
+            background: rgba(99, 102, 241, 0.1);
+            border-color: rgba(99, 102, 241, 0.45);
+            transform: translateY(-1px);
+        }
+
+        button.active {
+            background: rgba(99, 102, 241, 0.22);
+            border-color: rgba(99, 102, 241, 0.7);
+            color: #fff;
+            box-shadow: 0 12px 35px rgba(99, 102, 241, 0.18);
+        }
+
+        #connectBtn {
+            background: rgba(16, 185, 129, 0.08);
+            color: var(--success);
+            border-color: rgba(16, 185, 129, 0.35);
+        }
+
+        #connectBtn:hover {
+            background: rgba(16, 185, 129, 0.14);
+            border-color: rgba(16, 185, 129, 0.55);
+        }
+
+        #disconnectBtn {
+            background: rgba(244, 63, 94, 0.08);
+            color: var(--error);
+            border-color: rgba(244, 63, 94, 0.25);
+        }
+
+        #disconnectBtn:hover {
+            background: rgba(244, 63, 94, 0.14);
+            border-color: rgba(244, 63, 94, 0.45);
+        }
+
+        button:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            border: 1px solid var(--panel-border);
+            padding: 18px 18px 16px;
+            display: flex;
+            flex-direction: column;
+            min-height: 214px;
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .card:hover { transform: translateY(-2px); border-color: rgba(99, 102, 241, 0.3); }
+
+        .card h3 {
+            margin-bottom: 18px;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            display: flex;
+            align-items: center;
+        }
+
+        .card h3::before {
+            content: '';
+            width: 4px;
+            height: 14px;
+            background: var(--accent-color);
+            margin-right: 10px;
+            border-radius: 2px;
+        }
+
+        .chart-container {
+            height: 120px;
+            margin-top: auto;
+            padding: 12px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .chart-container canvas { width: 100% !important; height: 100% !important; }
+
+        .stat-item { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        .stat-label { color: var(--text-dim); font-size: 0.8rem; }
+        .stat-value { font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; color: #fff; }
+
+        .progress-bar {
+            background: rgba(255, 255, 255, 0.05);
+            height: 8px;
+            border-radius: 999px;
+            overflow: hidden;
+            margin: 12px 0 14px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, rgba(99, 102, 241, 1) 0%, rgba(99, 102, 241, 0.7) 100%);
+            width: 0%;
+            transition: 0.5s;
+            border-radius: 999px;
+        }
+
+        .full-width { grid-column: 1 / -1; }
+        .net-group { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 18px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            opacity: 0.9;
+        }
+
+        .error {
+            color: var(--error);
+            background: rgba(244, 63, 94, 0.1);
+            padding: 10px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            border: 1px solid rgba(244, 63, 94, 0.2);
+        }
+
+        @media (max-width: 900px) {
+            .header h1 { white-space: normal; }
+            .stats-grid { grid-template-columns: 1fr; }
+            .net-group { grid-template-columns: 1fr; gap: 14px; }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🖥️ 实时系统监控面板 (Rust)</h1>
-            <p>通过 Server-Sent Events (SSE) 实时监控系统状态</p>
+            <h1 id="i18n-title">SYSTEM DASHBOARD</h1>
+            <div class="lang-toggle">
+                <div class="lang-btn active" id="btn-en" onclick="setLang('en')">EN</div>
+                <div class="lang-btn" id="btn-zh" onclick="setLang('zh')">中文</div>
+            </div>
         </div>
 
         <div class="controls">
             <div class="control-group">
-                <label>刷新间隔: </label>
-                <button onclick="setInterval(1000)">1秒</button>
-                <button onclick="setInterval(2000)" class="active">2秒</button>
-                <button onclick="setInterval(5000)">5秒</button>
+                <label id="i18n-refresh">REFRESH</label>
+                <button onclick="changeInterval(1000, this)">1s</button>
+                <button onclick="changeInterval(2000, this)" class="active">2s</button>
+                <button onclick="changeInterval(5000, this)">5s</button>
             </div>
             <div class="control-group">
-                <button onclick="connect()" id="connectBtn">🔗 连接监控</button>
-                <button onclick="disconnect()" id="disconnectBtn">❌ 断开连接</button>
+                <button onclick="connect()" id="connectBtn">CONNECT</button>
+                <button onclick="disconnect()" id="disconnectBtn" disabled>STOP</button>
             </div>
         </div>
 
         <div id="errorContainer" style="display: none;"></div>
 
-        <div class="stats-grid" id="statsGrid">
+        <div class="stats-grid">
             <div class="card">
-                <h3>🖥️ 系统信息</h3>
-                <div class="stat-item"><span class="stat-label">主机名:</span><span class="stat-value" id="hostname">-</span></div>
-                <div class="stat-item"><span class="stat-label">系统:</span><span class="stat-value" id="osName">-</span></div>
-                <div class="stat-item"><span class="stat-label">内核:</span><span class="stat-value" id="kernelVersion">-</span></div>
-                <div class="stat-item"><span class="stat-label">运行时间:</span><span class="stat-value" id="systemUptime">-</span></div>
+                <h3 id="i18n-cpu-title">CPU USAGE</h3>
+                <div class="stat-item"><span class="stat-label" id="i18n-cpu-load">LOAD</span><span class="stat-value" id="cpuLoad">-</span></div>
+                <div class="stat-item"><span class="stat-label" id="i18n-cpu-usage">USAGE</span><span class="stat-value" id="cpuUsage">-</span></div>
+                <div class="progress-bar"><div class="progress-fill" id="cpuProgress"></div></div>
+                <div class="chart-container"><canvas id="cpuChart"></canvas></div>
             </div>
 
             <div class="card">
-                <h3>🧠 内存使用</h3>
-                <div class="stat-item"><span class="stat-label">总内存:</span><span class="stat-value" id="memoryTotal">-</span></div>
-                <div class="stat-item"><span class="stat-label">已使用:</span><span class="stat-value" id="memoryUsed">-</span></div>
-                <div class="stat-item"><span class="stat-label">使用率:</span><span class="stat-value" id="memoryUsage">-</span></div>
-                <div class="progress-bar"><div class="progress-fill" id="memoryProgress" style="width: 0%"></div></div>
+                <h3 id="i18n-mem-title">MEMORY</h3>
+                <div class="stat-item"><span class="stat-label" id="i18n-mem-total">TOTAL</span><span class="stat-value" id="memoryTotal">-</span></div>
+                <div class="stat-item"><span class="stat-label" id="i18n-mem-usage">USAGE</span><span class="stat-value" id="memoryUsage">-</span></div>
+                <div class="progress-bar"><div class="progress-fill" id="memoryProgress"></div></div>
+                <div class="chart-container"><canvas id="memChart"></canvas></div>
             </div>
 
             <div class="card">
-                <h3>⚡ CPU 信息</h3>
-                <div class="stat-item"><span class="stat-label">型号:</span><span class="stat-value" id="cpuModel">-</span></div>
-                <div class="stat-item"><span class="stat-label">核心数:</span><span class="stat-value" id="cpuCores">-</span></div>
-                <div class="stat-item"><span class="stat-label">使用率:</span><span class="stat-value" id="cpuUsage">-</span></div>
-                <div class="stat-item"><span class="stat-label">负载 (1/5/15分钟):</span><span class="stat-value" id="cpuLoad">-</span></div>
-                <div class="progress-bar"><div class="progress-fill" id="cpuProgress" style="width: 0%"></div></div>
+                <h3 id="i18n-os-title">HOST INFO</h3>
+                <div class="stat-item"><span class="stat-label" id="i18n-host">HOSTNAME</span><span class="stat-value" id="hostname">-</span></div>
+                <div class="stat-item"><span class="stat-label" id="i18n-os">OS</span><span class="stat-value" id="osName">-</span></div>
+                <div class="stat-item"><span class="stat-label" id="i18n-uptime">UPTIME</span><span class="stat-value" id="systemUptime">-</span></div>
+                <div style="margin-top:auto; font-size: 0.7rem; color: var(--text-dim);" id="kernelDisplay">Kernel: -</div>
             </div>
 
-            <div class="card">
-                <h3>💾 磁盘信息</h3>
-                <div class="stat-item">
-                    <span class="stat-label">磁盘型号:</span>
-                    <span class="stat-value" id="diskName">-</span>
-                </div>
-                <div class="stat-item"><span class="stat-label">总空间:</span><span class="stat-value" id="diskTotal">-</span></div>
-                <div class="stat-item"><span class="stat-label">已使用:</span><span class="stat-value" id="diskUsed">-</span></div>
-                <div class="stat-item"><span class="stat-label">使用率:</span><span class="stat-value" id="diskUsage">-</span></div>
-                <div class="progress-bar"><div class="progress-fill" id="diskProgress" style="width: 0%"></div></div>
-            </div>
-
-            <div class="card" style="grid-column: span 2;">
-                <h3>🌐 网络统计</h3>
-                <div class="network-stats">
+            <div class="card full-width">
+                <h3 id="i18n-net-title">NETWORK</h3>
+                <div class="net-group">
                     <div>
-                        <div class="stat-item"><span class="stat-label">总上传:</span><span class="stat-value" id="bytesSent">-</span></div>
-                        <div class="stat-item"><span class="stat-label">上传包数:</span><span class="stat-value" id="packetsSent">-</span></div>
+                        <div class="stat-item"><span class="stat-label" id="i18n-net-sent">SENT</span><span class="stat-value" id="bytesSent">-</span></div>
+                        <div class="stat-item"><span class="stat-label" id="i18n-net-psent">PKTS OUT</span><span class="stat-value" id="packetsSent">-</span></div>
                     </div>
                     <div>
-                        <div class="stat-item"><span class="stat-label">总下载:</span><span class="stat-value" id="bytesReceived">-</span></div>
-                        <div class="stat-item"><span class="stat-label">下载包数:</span><span class="stat-value" id="packetsReceived">-</span></div>
+                        <div class="stat-item"><span class="stat-label" id="i18n-net-recv">RECV</span><span class="stat-value" id="bytesReceived">-</span></div>
+                        <div class="stat-item"><span class="stat-label" id="i18n-net-precv">PKTS IN</span><span class="stat-value" id="packetsReceived">-</span></div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div class="timestamp" id="timestamp">最后更新: -</div>
+        <div class="footer">
+            <span id="timestamp">Waiting...</span>
+            <span>Powered by Rust & Warp</span>
+        </div>
     </div>
 
     <script>
         let eventSource = null;
         let currentInterval = 2000;
+        let currentLang = 'en';
+        let cpuChart, memChart;
 
-        function setInterval(interval) {
-            currentInterval = interval;
-            document.querySelectorAll('.control-group button').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-            if (eventSource) {
-                disconnect();
-                connect();
+        const i18n = {
+            en: {
+                title: "SYSTEM DASHBOARD", refresh: "REFRESH", connect: "CONNECT", stop: "STOP",
+                os_title: "HOST INFO", host: "HOSTNAME", os: "OS", uptime: "UPTIME",
+                mem_title: "MEMORY", mem_total: "TOTAL", mem_usage: "USAGE",
+                cpu_title: "CPU USAGE", cpu_load: "LOAD AVG", cpu_usage: "USAGE",
+                net_title: "NETWORK", net_sent: "SENT", net_psent: "PKTS OUT", net_recv: "RECV", net_precv: "PKTS IN",
+                last_update: "Last Update", err_token: "Access Token Required"
+            },
+            zh: {
+                title: "系统监控中心", refresh: "刷新间隔", connect: "建立连接", stop: "停止",
+                os_title: "主机信息", host: "主机名称", os: "操作系统", uptime: "运行时间",
+                mem_title: "内存状态", mem_total: "总内存容量", mem_usage: "当前利用率",
+                cpu_title: "处理器负载", cpu_load: "平均负载", cpu_usage: "使用率",
+                net_title: "网络实时流量", net_sent: "已发送", net_psent: "发送包数", net_recv: "已接收", net_precv: "接收包数",
+                last_update: "数据最后更新", err_token: "URL 缺失访问令牌"
             }
-        }
+        };
 
-        function connect() {
-            // 1. 从当前页面的 URL 中获取 token
-            const urlParams = new URLSearchParams(window.location.search);
-            const token = urlParams.get('token');
+        function initCharts() {
+            const commonOptions = {
+                responsive: true, maintainAspectRatio: false,
+                scales: {
+                    y: { min: 0, max: 100, display: false },
+                    x: { display: false }
+                },
+                plugins: { legend: { display: false } },
+                elements: { line: { tension: 0.4 }, point: { radius: 0 } },
+                animation: { duration: 400 }
+            };
 
-            if (!token) {
-                showError('URL 中缺失 token 参数，无法连接服务器');
-                return;
-            }
-
-            // 2. 将 token 和 interval 组合到 SSE 请求中
-            const params = new URLSearchParams({
-                interval: currentInterval,
-                token: token // 必须加上这一行
+            const ctxCpu = document.getElementById('cpuChart').getContext('2d');
+            cpuChart = new Chart(ctxCpu, {
+                type: 'line',
+                data: { labels: Array(30).fill(''), datasets: [{ data: Array(30).fill(0), borderColor: '#6366f1', fill: true, backgroundColor: 'rgba(99, 102, 241, 0.1)' }] },
+                options: commonOptions
             });
 
-            eventSource = new EventSource('/sse?' + params.toString());
-            
-            eventSource.onopen = () => {
-                console.log('SSE 连接已建立');
-                showError('');
-            };
-
-            eventSource.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    updateDisplay(data);
-                } catch (e) {
-                    console.error('解析数据失败:', e);
-                }
-            };
-
-            eventSource.onerror = (error) => {
-                console.error('SSE 连接错误:', error);
-                showError('连接错误，尝试重连中...');
-                setTimeout(() => {
-                    disconnect();
-                    connect();
-                }, 5000);
-            };
-
-            document.getElementById('connectBtn').disabled = true;
-            document.getElementById('disconnectBtn').disabled = false;
+            const ctxMem = document.getElementById('memChart').getContext('2d');
+            memChart = new Chart(ctxMem, {
+                type: 'line',
+                data: { labels: Array(30).fill(''), datasets: [{ data: Array(30).fill(0), borderColor: '#10b981', fill: true, backgroundColor: 'rgba(16, 185, 129, 0.1)' }] },
+                options: commonOptions
+            });
         }
 
-        function disconnect() {
-            if (eventSource) {
-                eventSource.close();
-                eventSource = null;
+        function setLang(lang) {
+            currentLang = lang;
+            document.getElementById('btn-en').classList.toggle('active', lang === 'en');
+            document.getElementById('btn-zh').classList.toggle('active', lang === 'zh');
+            const t = i18n[lang];
+            for (let id in t) {
+                const el = document.getElementById('i18n-' + id.replace('_', '-'));
+                if (el) el.innerText = t[id];
             }
-            document.getElementById('connectBtn').disabled = false;
-            document.getElementById('disconnectBtn').disabled = true;
         }
 
         function updateDisplay(data) {
-            // 系统信息
+            // Update Text
             document.getElementById('hostname').textContent = data.system.hostname;
             document.getElementById('osName').textContent = data.system.os_name;
-            document.getElementById('kernelVersion').textContent = data.system.kernel_version;
             document.getElementById('systemUptime').textContent = formatUptime(data.system.uptime);
+            document.getElementById('kernelDisplay').textContent = `Kernel: ${data.system.kernel_version}`;
 
-            // 内存信息
             document.getElementById('memoryTotal').textContent = formatBytes(data.memory.total);
-            document.getElementById('memoryUsed').textContent = formatBytes(data.memory.used);
             document.getElementById('memoryUsage').textContent = `${data.memory.usage.toFixed(1)}%`;
             document.getElementById('memoryProgress').style.width = `${data.memory.usage}%`;
 
-            // CPU 信息
-            document.getElementById('cpuModel').textContent = data.cpu.model;
-            document.getElementById('cpuCores').textContent = data.cpu.cores;
             document.getElementById('cpuUsage').textContent = `${data.cpu.usage.toFixed(1)}%`;
-            document.getElementById('cpuLoad').textContent = `${data.cpu.load_average.one.toFixed(2)} / ${data.cpu.load_average.five.toFixed(2)} / ${data.cpu.load_average.fifteen.toFixed(2)}`;
+            document.getElementById('cpuLoad').textContent = `${data.cpu.load_average.one.toFixed(2)} / ${data.cpu.load_average.five.toFixed(2)}`;
             document.getElementById('cpuProgress').style.width = `${data.cpu.usage}%`;
 
-            // 磁盘信息
-            document.getElementById('diskName').textContent = data.disk.name || "Unknown";
-            document.getElementById('diskTotal').textContent = formatBytes(data.disk.total);
-            document.getElementById('diskUsed').textContent = formatBytes(data.disk.used);
-            document.getElementById('diskUsage').textContent = `${data.disk.usage.toFixed(1)}%`;
-            document.getElementById('diskProgress').style.width = `${data.disk.usage}%`;
-
-            // 网络信息
             document.getElementById('bytesSent').textContent = formatBytes(data.network.stats.bytes_sent);
             document.getElementById('bytesReceived').textContent = formatBytes(data.network.stats.bytes_received);
             document.getElementById('packetsSent').textContent = data.network.stats.packets_sent.toLocaleString();
             document.getElementById('packetsReceived').textContent = data.network.stats.packets_received.toLocaleString();
+            document.getElementById('timestamp').textContent = `${i18n[currentLang].last_update}: ${new Date(data.timestamp * 1000).toLocaleTimeString()}`;
 
-            // 时间戳
-            document.getElementById('timestamp').textContent = `最后更新: ${new Date(data.timestamp * 1000).toLocaleString()}`;
+            // Update Charts
+            updateChart(cpuChart, data.cpu.usage);
+            updateChart(memChart, data.memory.usage);
         }
 
-        function showError(message) {
-            const container = document.getElementById('errorContainer');
-            if (message) {
-                container.innerHTML = `<div class="error">${message}</div>`;
-                container.style.display = 'block';
-            } else {
-                container.style.display = 'none';
-            }
+        function updateChart(chart, val) {
+            chart.data.datasets[0].data.push(val);
+            chart.data.datasets[0].data.shift();
+            chart.update('none');
         }
 
-        function formatUptime(seconds) {
-            const days = Math.floor(seconds / 86400);
-            const hours = Math.floor((seconds % 86400) / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const secs = seconds % 60;
-
-            const parts = [];
-            if (days > 0) parts.push(`${days}天`);
-            if (hours > 0) parts.push(`${hours}小时`);
-            if (minutes > 0) parts.push(`${minutes}分`);
-            parts.push(`${secs}秒`);
-
-            return parts.join('');
+        function connect() {
+            const token = new URLSearchParams(window.location.search).get('token');
+            if (!token) { showError(i18n[currentLang].err_token); return; }
+            showError('');
+            eventSource = new EventSource(`/sse?token=${token}&interval=${currentInterval}`);
+            eventSource.onopen = () => {
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+            };
+            eventSource.onmessage = (e) => updateDisplay(JSON.parse(e.data));
+            eventSource.onerror = () => { disconnect(); setTimeout(connect, 3000); };
         }
 
-        function formatBytes(bytes) {
-            if (bytes === 0) return "0 B";
-            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-            let size = bytes;
-            let unitIndex = 0;
-            while (size >= 1024 && unitIndex < units.length - 1) {
-                size /= 1024;
-                unitIndex++;
-            }
-            return `${size.toFixed(2)} ${units[unitIndex]}`;
+        function disconnect() { if (eventSource) { eventSource.close(); eventSource = null; }
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
         }
 
-        // 页面加载完成后自动连接
-        window.addEventListener('load', connect);
+        function changeInterval(ms, btn) {
+            currentInterval = ms;
+            btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            if (eventSource) { disconnect(); connect(); }
+        }
+
+        function formatBytes(b) {
+            if (b === 0) return "0 B";
+            const s = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(b) / Math.log(1024));
+            return (b / Math.pow(1024, i)).toFixed(2) + ' ' + s[i];
+        }
+
+        function formatUptime(s) {
+            const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+            return currentLang === 'zh' ? `${d}天${h}时${m}分` : `${d}d ${h}h ${m}m`;
+        }
+
+        function showError(m) {
+            const c = document.getElementById('errorContainer');
+            c.innerHTML = m ? `<div class="error">${m}</div>` : '';
+            c.style.display = m ? 'block' : 'none';
+        }
+
+        window.onload = () => { initCharts(); setLang('zh'); connect(); };
     </script>
 </body>
 </html>
     "#;
-
     warp::reply::html(html)
 }
 
@@ -523,9 +766,15 @@ impl warp::reject::Reject for AuthFailure {}
 
 async fn handle_rejection(err: Rejection) -> Result<impl warp::Reply, Infallible> {
     if err.find::<AuthFailure>().is_some() {
-        Ok(warp::reply::with_status("Invalid Token", warp::http::StatusCode::FORBIDDEN))
+        Ok(warp::reply::with_status(
+            "Invalid Token",
+            warp::http::StatusCode::FORBIDDEN,
+        ))
     } else {
-        Ok(warp::reply::with_status("Internal Error", warp::http::StatusCode::INTERNAL_SERVER_ERROR))
+        Ok(warp::reply::with_status(
+            "Internal Error",
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ))
     }
 }
 
@@ -535,7 +784,10 @@ async fn handle_rejection(err: Rejection) -> Result<impl warp::Reply, Infallible
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let port = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8080);
-    let auth_token = args.get(2).cloned().unwrap_or_else(|| "m1MLaC23MmDNmkPf21STPnNDPSv9P7".to_string());
+    let auth_token = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| "m1MLaC23MmDNmkPf21STPnNDPSv9P7".to_string());
 
     println!("🚀 Server: http://0.0.0.0:{}", port);
     println!("🔐 Token: {}", auth_token);
@@ -547,15 +799,20 @@ async fn main() {
 
     let with_auth = warp::query::<HashMap<String, String>>()
         .and(token_filter)
-        .and_then(|params: HashMap<String, String>, required: String| async move {
-            if params.get("token") == Some(&required) {
-                Ok(())
-            } else {
-                Err(warp::reject::custom(AuthFailure))
-            }
-        });
+        .and_then(
+            |params: HashMap<String, String>, required: String| async move {
+                if params.get("token") == Some(&required) {
+                    Ok(())
+                } else {
+                    Err(warp::reject::custom(AuthFailure))
+                }
+            },
+        );
 
-    let cors = warp::cors().allow_any_origin().allow_methods(vec!["GET"]).allow_headers(vec!["Content-Type"]);
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_methods(vec!["GET"])
+        .allow_headers(vec!["Content-Type"]);
 
     // SSE 路由：注意闭包多了一个 _ 参数来接收 with_auth 传来的 ()
     let sse_route = warp::path("sse")
@@ -563,7 +820,10 @@ async fn main() {
         .and(with_auth.clone())
         .and(warp::query::<HashMap<String, String>>())
         .and_then(|_auth, params: HashMap<String, String>| async move {
-            let interval_ms = params.get("interval").and_then(|s| s.parse().ok()).unwrap_or(2000);
+            let interval_ms = params
+                .get("interval")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2000);
             sse_handler(interval_ms).await
         });
 
@@ -577,7 +837,11 @@ async fn main() {
         .and(with_auth.clone())
         .map(|_auth| html_handler());
 
-    let routes = sse_route.or(api_route).or(html_route).with(cors).recover(handle_rejection);
+    let routes = sse_route
+        .or(api_route)
+        .or(html_route)
+        .with(cors)
+        .recover(handle_rejection);
 
     warp::serve(routes).run(([0, 0, 0, 0], port)).await;
 }
